@@ -58,7 +58,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-__author__ = "Ka-Ping Yee <ping@zesty.ca>"
+__author__ = "Ka-Ping Yee <ping@zesty.ca>, Anselm Kiefner <github@anselm.kiefner.de>"
 
 # WARNING: Horrible abuse of sys.modules, __call__, __div__, __or__, inspect,
 # sys._getframe, and more!  q's behaviour changes depending on the text of the
