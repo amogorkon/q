@@ -45,20 +45,18 @@ To start an interactive console at any point in your code, call q.d():
 
 import ast
 import code
-import contextlib
 import functools
 import inspect
 import os
 import pathlib
-import pydoc
-import random
 import re
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
+from pydoc import TextRepr
+from time import time
 
-__author__ = "Ka-Ping Yee <ping@zesty.ca>, Anselm Kiefner <github@anselm.kiefner.de>"
+__author__ = "Ka-Ping Yee <ping@zesty.ca>"
 
 # WARNING: Horrible abuse of sys.modules, __call__, __div__, __or__, inspect,
 # sys._getframe, and more!  q's behaviour changes depending on the text of the
@@ -70,29 +68,32 @@ NORMAL, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN = ESCAPE_SEQUENCES
 BASESTRING_TYPES = (str, bytes)
 TEXT_TYPES = (str,)
 
+path = Path(sys.argv[0]).parents[0]
+path = path / "logs"
+path.mkdir(exist_ok=True)
+OUTPUT_PATH = path / "watnu.log"
+OUTPUT_PATH.touch()
+
 
 class FileWriter(object):
     """An object that appends to or overwrites a single file."""
 
     def __init__(self, path):
         self.path = path
-        self.open = open.__bases__[0] if open.__name__ == "FakeFile" else open
 
     def write(self, mode, content):
         if "b" not in mode:
             mode = f"{mode}b"
-        if isinstance(content, self.BASESTRING_TYPES) and isinstance(content, self.TEXT_TYPES):
+        if isinstance(content, BASESTRING_TYPES) and isinstance(content, TEXT_TYPES):
             content = content.encode("utf-8")
-        with contextlib.suppress(IOError):
-            f = self.open(self.path, mode)
+        with open(self.path, mode) as f:
             f.write(content)
-            f.close()
 
 
 class Writer:
     """Abstract away the output pipe, timestamping, and color support."""
 
-    def __init__(self, file_writer, time, color=False):
+    def __init__(self, file_writer, color=False):
         self.color = color
         self.file_writer = file_writer
         self.gap_seconds = 2
@@ -147,7 +148,7 @@ class Stanza:
 
 class Q(object):
     # The debugging log will go to this file; temporary files will also have
-    # this path as a prefix, followed by a random number.
+    # this path as a prefix, followed by a timestamp excel-style as name.
     # if sys.platform.startswith("win"):
     #     home = os.getenv('HOME')
     #     tmp = os.path.join(HOME, 'tmp')
@@ -156,42 +157,34 @@ class Q(object):
     #     OUTPUT_PATH = os.path.join(tmp, 'q')
     # else:
     #     OUTPUT_PATH = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'q')
-    path = pathlib.Path(sys.argv[0]).parents[0]
-    path = path / "logs"
-    path.mkdir(exist_ok=True)
-    OUTPUT_PATH = path / "watnu.log"
-    OUTPUT_PATH.touch()
-    TEXT_REPR = pydoc.TextRepr()
 
     def __init__(self):
-        self.writer = self.Writer(self.FileWriter(self.OUTPUT_PATH), self.time)
+        self.writer = Writer(FileWriter(OUTPUT_PATH))
         self.indent = 0
         # in_console tracks whether we're in an interactive console.
         # We use it to display the caller as "<console>" instead of "<module>".
         self.in_console = False
 
-        from datetime import datetime
-
         self.writer.write(
             f"""==========================
-{datetime.now()}
+{excel_style_datetime(datetime.now())}
 ==========================
 """
         )
 
     def unindent(self, lines):
         """Removes any indentation that is common to all of the given lines."""
-        indent = min(len(self.re.match(r"^ *", line).group()) for line in lines)
+        indent = min(len(re.match(r"^ *", line).group()) for line in lines)
         return [line[indent:].rstrip() for line in lines]
 
     def safe_repr(self, value):
-        result = self.TEXT_REPR.repr(value)
-        if isinstance(value, self.BASESTRING_TYPES) and len(value) > 80:
+        result = TextRepr().repr(value)
+        if isinstance(value, BASESTRING_TYPES) and len(value) > 80:
             # If the string is big, save it to a file for later examination.
-            if isinstance(value, self.TEXT_TYPES):
+            if isinstance(value, TEXT_TYPES):
                 value = value.encode("utf-8")
-            path = self.OUTPUT_PATH.parents[0] / ("%08d.txt" % self.random.randrange(1e8))
-            self.FileWriter(path).write("w", value)
+            path = OUTPUT_PATH.parents[0] / ("%08d.txt" % excel_style_datetime(datetime.now()))
+            FileWriter(path).write("w", value)
             result += f" (file://{str(path)})"
         return result
 
@@ -199,23 +192,23 @@ class Q(object):
         """Gets the argument expressions from the source of a function call."""
         line = line.lstrip()
         try:
-            tree = self.ast.parse(line)
+            tree = ast.parse(line)
         except SyntaxError:
             return None
-        for node in self.ast.walk(tree):
-            if isinstance(node, self.ast.Call):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
                 offsets = [arg.col_offset for arg in node.args]
                 if node.keywords:
                     line = line[: node.keywords[0].value.col_offset]
-                    line = self.re.sub(r"\w+\s*=\s*$", "", line)
+                    line = re.sub(r"\w+\s*=\s*$", "", line)
                 else:
-                    line = self.re.sub(r"\s*\)\s*$", "", line)
+                    line = re.sub(r"\s*\)\s*$", "", line)
                 offsets.append(len(line))
                 return [line[offsets[i] : offsets[i + 1]].rstrip(", ") for i in range(len(node.args))]
 
     def show(self, func_name, values, labels=None):
         """Prints out nice representations of the given values."""
-        s = self.Stanza(self.indent)
+        s = Stanza(self.indent)
         if func_name == "<module>" and self.in_console:
             func_name = "<console>"
         s.add([f"{func_name}: "])
@@ -223,11 +216,11 @@ class Q(object):
         sep = ""
         if labels:
             for label, repr in zip(labels, reprs):
-                s.add([f"{label}=", self.CYAN, repr, self.NORMAL], sep)
+                s.add([f"{label}=", CYAN, repr, NORMAL], sep)
                 sep = ", "
         else:
             for repr in reprs:
-                s.add([self.CYAN, repr, self.NORMAL], sep)
+                s.add([CYAN, repr, NORMAL], sep)
                 sep = ", "
         self.writer.write(s.chunks)
 
@@ -236,15 +229,15 @@ class Q(object):
 
         def wrapper(*args, **kwargs):
             # Print out the call to the function with its arguments.
-            s = self.Stanza(self.indent)
-            s.add([self.GREEN, func.__name__, self.NORMAL, "("])
+            s = Stanza(self.indent)
+            s.add([GREEN, func.__name__, NORMAL, "("])
             s.indent += 4
             sep = ""
             for arg in args:
-                s.add([self.CYAN, self.safe_repr(arg), self.NORMAL], sep)
+                s.add([CYAN, self.safe_repr(arg), NORMAL], sep)
                 sep = ", "
             for name, value in sorted(kwargs.items()):
-                s.add([f"{name}=", self.CYAN, self.safe_repr(value), self.NORMAL], sep)
+                s.add([f"{name}=", CYAN, self.safe_repr(value), NORMAL], sep)
                 sep = ", "
             s.add(")", wrap=False)
             self.writer.write(s.chunks)
@@ -256,10 +249,10 @@ class Q(object):
             except:
                 # Display an exception.
                 self.indent -= 2
-                etype, evalue, etb = self.sys.exc_info()
-                info = self.inspect.getframeinfo(etb.tb_next, context=3)
-                s = self.Stanza(self.indent)
-                s.add([self.RED, "!> ", self.safe_repr(evalue), self.NORMAL])
+                etype, evalue, etb = sys.exc_info()
+                info = inspect.getframeinfo(etb.tb_next, context=3)
+                s = Stanza(self.indent)
+                s.add([RED, "!> ", self.safe_repr(evalue), NORMAL])
                 s.add(["at ", info.filename, ":", info.lineno], " ")
                 lines = self.unindent(info.code_context)
                 firstlineno = info.lineno - info.index
@@ -268,11 +261,11 @@ class Q(object):
                     s.newline()
                     s.add(
                         [
-                            i == info.index and self.MAGENTA or "",
+                            i == info.index and MAGENTA or "",
                             fmt % (i + firstlineno),
                             i == info.index and "> " or ": ",
                             line,
-                            self.NORMAL,
+                            NORMAL,
                         ]
                     )
                 self.writer.write(s.chunks)
@@ -280,17 +273,17 @@ class Q(object):
 
             # Display the return value.
             self.indent -= 2
-            s = self.Stanza(self.indent)
-            s.add([self.GREEN, "-> ", self.CYAN, self.safe_repr(result), self.NORMAL])
+            s = Stanza(self.indent)
+            s.add([GREEN, "-> ", CYAN, self.safe_repr(result), NORMAL])
             self.writer.write(s.chunks)
             return result
 
-        return self.functools.update_wrapper(wrapper, func)
+        return functools.update_wrapper(wrapper, func)
 
     def __call__(self, *args):
         """If invoked as a decorator on a function, adds tracing output to the
         function; otherwise immediately prints out the arguments."""
-        info = self.inspect.getframeinfo(self.sys._getframe(1), context=9)
+        info = inspect.getframeinfo(sys._getframe(1), context=9)
 
         lines = info.code_context[: info.index + 1] if info.code_context else [""]
         # If we see "@q" on a single line, behave like a trace decorator.
@@ -310,7 +303,7 @@ class Q(object):
 
     def __truediv__(self, arg):  # a tight-binding operator
         """Prints out and returns the argument."""
-        info = self.inspect.getframeinfo(self.sys._getframe(1))
+        info = inspect.getframeinfo(sys._getframe(1))
         self.show(info.function, [arg])
         return arg
 
@@ -319,23 +312,23 @@ class Q(object):
 
     def d(self, depth=1):
         """Launches an interactive console at the point where it's called."""
-        info = self.inspect.getframeinfo(self.sys._getframe(1))
+        info = inspect.getframeinfo(sys._getframe(1))
         self.actually_log(info, "Interactive console opened")
-        frame = self.sys._getframe(depth)
+        frame = sys._getframe(depth)
         env = frame.f_globals.copy()
         env.update(frame.f_locals)
         self.indent += 2
         self.in_console = True
-        self.code.interact(f"Python console opened by q.d() in {info.function}", local=env)
+        code.interact(f"Python console opened by q.d() in {info.function}", local=env)
         self.in_console = False
         self.indent -= 2
 
         self.actually_log(info, "Interactive console closed")
 
     def actually_log(self, info, msg):
-        result = self.Stanza(self.indent)
+        result = Stanza(self.indent)
         result.add([f"{info.function}: "])
-        result.add([self.MAGENTA, msg, self.NORMAL])
+        result.add([MAGENTA, msg, NORMAL])
         self.writer.write(result.chunks)
 
         return result
